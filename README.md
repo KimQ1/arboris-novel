@@ -14,11 +14,6 @@
 
 **在线体验：** [https://arboris.aozhiai.com](https://arboris.aozhiai.com) 
  
-**有问题想聊？加群：**  
-<p align="center">
-  <img width="294" alt="交流群二维码" src="https://github.com/user-attachments/assets/90b6819f-896b-4ddf-9946-43d52c8f1c36" />
-</p>
-
 ---
 
 ## 截图看看长什么样
