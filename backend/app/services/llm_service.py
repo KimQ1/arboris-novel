@@ -1,10 +1,11 @@
 import logging
 import os
-from typing import Any, Dict, List, Optional
+import time
+from typing import Any, Dict, List, Optional, Set
 
 import httpx
 from fastapi import HTTPException, status
-from openai import APIConnectionError, APITimeoutError, AsyncOpenAI, InternalServerError
+from openai import APIConnectionError, APITimeoutError, AsyncOpenAI, InternalServerError, RateLimitError
 
 from ..core.config import settings
 from ..repositories.llm_config_repository import LLMConfigRepository
@@ -26,6 +27,16 @@ except ImportError:  # pragma: no cover - Ollama 为可选依赖
 class LLMService:
     """封装与大模型交互的所有逻辑，包括配额控制与配置选择。"""
 
+    # 类变量：用于多 Key 轮询的索引
+    _api_key_index = 0
+
+    # 类变量：记录配额耗尽的 API Key 及其失败时间戳
+    # 格式: {api_key: timestamp}
+    _exhausted_keys: Dict[str, float] = {}
+
+    # 配额耗尽的 Key 黑名单有效期（秒），默认 1 小时
+    _exhausted_key_ttl = 3600
+
     def __init__(self, session):
         self.session = session
         self.llm_repo = LLMConfigRepository(session)
@@ -34,6 +45,34 @@ class LLMService:
         self.admin_setting_service = AdminSettingService(session)
         self.usage_service = UsageService(session)
         self._embedding_dimensions: Dict[str, int] = {}
+
+    @classmethod
+    def _clean_expired_exhausted_keys(cls) -> None:
+        """清理过期的配额耗尽记录"""
+        current_time = time.time()
+        expired_keys = [
+            key for key, timestamp in cls._exhausted_keys.items()
+            if current_time - timestamp > cls._exhausted_key_ttl
+        ]
+        for key in expired_keys:
+            del cls._exhausted_keys[key]
+            logger.info("API Key 黑名单已过期，重新启用: %s...", key[:10])
+
+    @classmethod
+    def _is_key_exhausted(cls, api_key: str) -> bool:
+        """检查 API Key 是否在配额耗尽黑名单中"""
+        cls._clean_expired_exhausted_keys()
+        return api_key in cls._exhausted_keys
+
+    @classmethod
+    def _mark_key_exhausted(cls, api_key: str) -> None:
+        """将 API Key 标记为配额耗尽"""
+        cls._exhausted_keys[api_key] = time.time()
+        logger.warning(
+            "API Key 已加入黑名单（%d 小时内不再使用）: %s...",
+            cls._exhausted_key_ttl // 3600,
+            api_key[:10]
+        )
 
     async def get_llm_response(
         self,
@@ -85,7 +124,159 @@ class LLMService:
         response_format: Optional[str] = None,
     ) -> str:
         config = await self._resolve_llm_config(user_id)
-        client = LLMClient(api_key=config["api_key"], base_url=config.get("base_url"))
+
+        # 解析多个 API Key（支持换行符或逗号分隔）
+        api_keys = self._parse_api_keys(config["api_key"])
+
+        # 如果只有一个 Key，直接使用旧逻辑
+        if len(api_keys) == 1:
+            return await self._stream_with_single_key(
+                messages=messages,
+                api_key=api_keys[0],
+                base_url=config.get("base_url"),
+                model=config.get("model"),
+                temperature=temperature,
+                user_id=user_id,
+                timeout=timeout,
+                response_format=response_format,
+            )
+
+        # 多 Key 轮询逻辑
+        return await self._stream_with_key_rotation(
+            messages=messages,
+            api_keys=api_keys,
+            base_url=config.get("base_url"),
+            model=config.get("model"),
+            temperature=temperature,
+            user_id=user_id,
+            timeout=timeout,
+            response_format=response_format,
+        )
+
+    def _parse_api_keys(self, api_key_str: Optional[str]) -> List[str]:
+        """解析 API Key 字符串，支持换行符或逗号分隔多个 Key"""
+        if not api_key_str:
+            return []
+
+        # 先按换行符分割，再按逗号分割
+        keys = []
+        for line in api_key_str.split('\n'):
+            for key in line.split(','):
+                key = key.strip()
+                if key:
+                    keys.append(key)
+
+        return keys
+
+    async def _stream_with_key_rotation(
+        self,
+        messages: List[Dict[str, str]],
+        api_keys: List[str],
+        base_url: Optional[str],
+        model: Optional[str],
+        temperature: float,
+        user_id: Optional[int],
+        timeout: float,
+        response_format: Optional[str],
+    ) -> str:
+        """使用多个 API Key 轮询，遇到 429 错误时自动切换"""
+        last_error = None
+        failed_keys_count = 0
+
+        # 过滤掉黑名单中的 Key
+        available_keys = [key for key in api_keys if not self._is_key_exhausted(key)]
+        exhausted_count = len(api_keys) - len(available_keys)
+
+        if exhausted_count > 0:
+            logger.info(
+                "已过滤 %d 个配额耗尽的 API Key，剩余可用 Key: %d 个",
+                exhausted_count,
+                len(available_keys)
+            )
+
+        if not available_keys:
+            logger.error("所有 %d 个 API Key 都已配额耗尽，请稍后重试", len(api_keys))
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"所有 {len(api_keys)} 个 API Key 都已达到配额限制，请稍后重试或在设置中添加更多 API Key。"
+            )
+
+        # 尝试所有可用的 Key
+        for attempt in range(len(available_keys)):
+            # 使用轮询索引选择 Key
+            key_index = (LLMService._api_key_index + attempt) % len(available_keys)
+            current_key = available_keys[key_index]
+
+            logger.info(
+                "尝试使用 API Key #%d/%d (可用Key索引: %d)",
+                attempt + 1,
+                len(available_keys),
+                key_index,
+            )
+
+            try:
+                result = await self._stream_with_single_key(
+                    messages=messages,
+                    api_key=current_key,
+                    base_url=base_url,
+                    model=model,
+                    temperature=temperature,
+                    user_id=user_id,
+                    timeout=timeout,
+                    response_format=response_format,
+                )
+
+                # 成功后更新轮询索引到下一个 Key
+                LLMService._api_key_index = (key_index + 1) % len(available_keys)
+                logger.info("API Key #%d 调用成功，下次将使用 Key #%d", key_index, LLMService._api_key_index)
+
+                return result
+
+            except RateLimitError as exc:
+                last_error = exc
+                failed_keys_count += 1
+
+                # 将配额耗尽的 Key 加入黑名单
+                self._mark_key_exhausted(current_key)
+
+                logger.warning(
+                    "API Key #%d 达到配额限制 (429)，已失败 %d/%d 个可用 Key",
+                    key_index,
+                    failed_keys_count,
+                    len(available_keys),
+                    exc_info=exc,
+                )
+                continue
+            except Exception as exc:
+                # 其他错误直接抛出，不尝试下一个 Key
+                logger.error(
+                    "API Key #%d 调用失败（非配额错误），停止轮询: %s",
+                    key_index,
+                    str(exc),
+                    exc_info=exc,
+                )
+                raise
+
+        # 所有可用 Key 都失败了
+        logger.error("所有 %d 个可用 API Key 都已达到配额限制，请求失败", len(available_keys))
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"所有可用的 API Key 都已达到配额限制，请稍后重试或在设置中添加更多 API Key。建议等待配额重置后再试。"
+        )
+
+    async def _stream_with_single_key(
+        self,
+        messages: List[Dict[str, str]],
+        api_key: str,
+        base_url: Optional[str],
+        model: Optional[str],
+        temperature: float,
+        user_id: Optional[int],
+        timeout: float,
+        response_format: Optional[str],
+    ) -> str:
+        """使用单个 API Key 进行流式调用"""
+        client = LLMClient(api_key=api_key, base_url=base_url)
 
         chat_messages = [ChatMessage(role=msg["role"], content=msg["content"]) for msg in messages]
 
@@ -94,7 +285,7 @@ class LLMService:
 
         logger.info(
             "Streaming LLM response: model=%s user_id=%s messages=%d",
-            config.get("model"),
+            model,
             user_id,
             len(messages),
         )
@@ -102,7 +293,7 @@ class LLMService:
         try:
             async for part in client.stream_chat(
                 messages=chat_messages,
-                model=config.get("model"),
+                model=model,
                 temperature=temperature,
                 timeout=int(timeout),
                 response_format=response_format,
@@ -111,6 +302,9 @@ class LLMService:
                     full_response += part["content"]
                 if part.get("finish_reason"):
                     finish_reason = part["finish_reason"]
+        except RateLimitError as exc:
+            # 429 错误，向上抛出以便轮询逻辑处理
+            raise
         except InternalServerError as exc:
             detail = "AI 服务内部错误，请稍后重试"
             response = getattr(exc, "response", None)
@@ -125,7 +319,7 @@ class LLMService:
                 detail = str(exc) or detail
             logger.error(
                 "LLM stream internal error: model=%s user_id=%s detail=%s",
-                config.get("model"),
+                model,
                 user_id,
                 detail,
                 exc_info=exc,
@@ -140,7 +334,7 @@ class LLMService:
                 detail = "无法连接到 AI 服务，请稍后重试"
             logger.error(
                 "LLM stream failed: model=%s user_id=%s detail=%s",
-                config.get("model"),
+                model,
                 user_id,
                 detail,
                 exc_info=exc,
@@ -149,7 +343,7 @@ class LLMService:
 
         logger.debug(
             "LLM response collected: model=%s user_id=%s finish_reason=%s preview=%s",
-            config.get("model"),
+            model,
             user_id,
             finish_reason,
             full_response[:500],
@@ -158,7 +352,7 @@ class LLMService:
         if finish_reason == "length":
             logger.warning(
                 "LLM response truncated: model=%s user_id=%s response_length=%d",
-                config.get("model"),
+                model,
                 user_id,
                 len(full_response),
             )
@@ -170,7 +364,7 @@ class LLMService:
         if not full_response:
             logger.error(
                 "LLM returned empty response: model=%s user_id=%s finish_reason=%s",
-                config.get("model"),
+                model,
                 user_id,
                 finish_reason,
             )
@@ -182,7 +376,7 @@ class LLMService:
         await self.usage_service.increment("api_request_count")
         logger.info(
             "LLM response success: model=%s user_id=%s chars=%d",
-            config.get("model"),
+            model,
             user_id,
             len(full_response),
         )
@@ -263,29 +457,33 @@ class LLMService:
             if not isinstance(embedding, list):
                 embedding = list(embedding)
         else:
+            # OpenAI 兼容接口，使用 Key 轮换机制
             config = await self._resolve_llm_config(user_id)
-            api_key = await self._get_config_value("embedding.api_key") or config["api_key"]
+            embedding_api_key = await self._get_config_value("embedding.api_key")
             base_url = await self._get_config_value("embedding.base_url") or config.get("base_url")
-            client = AsyncOpenAI(api_key=api_key, base_url=base_url)
-            try:
-                response = await client.embeddings.create(
-                    input=text,
-                    model=target_model,
-                )
-            except Exception as exc:  # pragma: no cover - 网络或鉴权失败
-                logger.error(
-                    "OpenAI 嵌入请求失败: model=%s base_url=%s user_id=%s error=%s",
-                    target_model,
-                    base_url,
-                    user_id,
-                    exc,
-                    exc_info=True,
-                )
+
+            # 解析 API Keys（支持多个 Key）
+            if embedding_api_key:
+                api_keys = self._parse_api_keys(embedding_api_key)
+            else:
+                # 回退使用 LLM 的 API Keys
+                api_keys = self._parse_api_keys(config["api_key"])
+
+            if not api_keys:
+                logger.error("未配置嵌入模型 API Key")
                 return []
-            if not response.data:
-                logger.warning("OpenAI 嵌入请求返回空数据: model=%s user_id=%s", target_model, user_id)
+
+            # 使用 Key 轮换机制
+            embedding = await self._get_embedding_with_key_rotation(
+                text=text,
+                api_keys=api_keys,
+                base_url=base_url,
+                model=target_model,
+                user_id=user_id,
+            )
+
+            if not embedding:
                 return []
-            embedding = response.data[0].embedding
 
         if not isinstance(embedding, list):
             embedding = list(embedding)
@@ -298,6 +496,97 @@ class LLMService:
         if dimension:
             self._embedding_dimensions[target_model] = dimension
         return embedding
+
+    async def _get_embedding_with_key_rotation(
+        self,
+        text: str,
+        api_keys: List[str],
+        base_url: Optional[str],
+        model: str,
+        user_id: Optional[int],
+    ) -> List[float]:
+        """使用多个 API Key 轮询获取嵌入向量"""
+        last_error = None
+        failed_keys_count = 0
+
+        # 过滤掉黑名单中的 Key
+        available_keys = [key for key in api_keys if not self._is_key_exhausted(key)]
+        exhausted_count = len(api_keys) - len(available_keys)
+
+        if exhausted_count > 0:
+            logger.info(
+                "[嵌入] 已过滤 %d 个配额耗尽的 API Key，剩余可用 Key: %d 个",
+                exhausted_count,
+                len(available_keys)
+            )
+
+        if not available_keys:
+            logger.error("[嵌入] 所有 %d 个 API Key 都已配额耗尽", len(api_keys))
+            return []
+
+        # 尝试所有可用的 Key
+        for attempt in range(len(available_keys)):
+            # 使用轮询索引选择 Key
+            key_index = (LLMService._api_key_index + attempt) % len(available_keys)
+            current_key = available_keys[key_index]
+
+            logger.info(
+                "[嵌入] 尝试使用 API Key #%d/%d (可用Key索引: %d)",
+                attempt + 1,
+                len(available_keys),
+                key_index,
+            )
+
+            client = AsyncOpenAI(api_key=current_key, base_url=base_url)
+
+            try:
+                response = await client.embeddings.create(
+                    input=text,
+                    model=model,
+                )
+
+                if not response.data:
+                    logger.warning("[嵌入] API 返回空数据: model=%s", model)
+                    continue
+
+                # 成功后更新轮询索引到下一个 Key
+                LLMService._api_key_index = (key_index + 1) % len(available_keys)
+                logger.info("[嵌入] API Key #%d 调用成功", key_index)
+
+                return response.data[0].embedding
+
+            except RateLimitError as exc:
+                last_error = exc
+                failed_keys_count += 1
+
+                # 将配额耗尽的 Key 加入黑名单
+                self._mark_key_exhausted(current_key)
+
+                logger.warning(
+                    "[嵌入] API Key #%d 达到配额限制 (429)，已失败 %d/%d 个可用 Key",
+                    key_index,
+                    failed_keys_count,
+                    len(available_keys),
+                    exc_info=exc,
+                )
+                continue
+
+            except Exception as exc:
+                # 其他错误（如 invalid API key）记录但继续尝试下一个 Key
+                logger.error(
+                    "[嵌入] API Key #%d 调用失败: model=%s base_url=%s error=%s",
+                    key_index,
+                    model,
+                    base_url,
+                    exc,
+                    exc_info=True,
+                )
+                # 对于非配额错误，也尝试下一个 Key
+                continue
+
+        # 所有 Key 都失败了
+        logger.error("[嵌入] 所有 %d 个可用 API Key 都已失败", len(available_keys))
+        return []
 
     async def get_embedding_dimension(self, model: Optional[str] = None) -> Optional[int]:
         """获取嵌入向量维度，优先返回缓存结果，其次读取配置。"""

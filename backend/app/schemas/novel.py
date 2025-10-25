@@ -36,6 +36,16 @@ class ConverseRequest(BaseModel):
     conversation_state: Dict[str, Any]
 
 
+class StartConceptResponse(BaseModel):
+    """开始概念对话的返回体，包含项目信息和第一次对话响应。"""
+
+    project_id: str
+    ai_message: str
+    ui_control: UIControl
+    conversation_state: Dict[str, Any]
+    is_complete: bool = False
+
+
 class ChapterGenerationStatus(str, Enum):
     NOT_GENERATED = "not_generated"
     GENERATING = "generating"
@@ -162,9 +172,29 @@ class BlueprintPatch(BaseModel):
     world_setting: Optional[Dict[str, Any]] = None
     characters: Optional[List[Dict[str, Any]]] = None
     relationships: Optional[List[Relationship]] = None
+
+
+class ExpandContentRequest(BaseModel):
+    """AI 扩展内容请求"""
+    content_type: str = Field(..., description="内容类型: faction, quest, location, item")
+    brief_description: str = Field(..., description="简短描述")
+
+
+class ExpandContentResponse(BaseModel):
+    """AI 扩展内容响应"""
+    expanded_content: str = Field(..., description="扩展后的内容")
+    original_input: str = Field(..., description="原始输入")
     chapter_outline: Optional[List[ChapterOutline]] = None
 
 
 class EditChapterRequest(BaseModel):
     chapter_number: int
     content: str
+
+
+class RegenerateEmbeddingsRequest(BaseModel):
+    """重新生成嵌入向量请求"""
+    chapter_numbers: Optional[List[int]] = Field(
+        default=None,
+        description="要重新生成的章节号列表，留空则重新生成所有已选择版本的章节"
+    )
