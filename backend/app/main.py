@@ -30,6 +30,7 @@ dictConfig(
             }
         },
         "loggers": {
+            # 应用自己的日志
             "backend": {
                 "level": settings.logging_level,
                 "handlers": ["console"],
@@ -52,6 +53,29 @@ dictConfig(
             },
             "backend.services": {
                 "level": settings.logging_level,
+                "handlers": ["console"],
+                "propagate": False,
+            },
+            # 关闭 SQLAlchemy 的 SQL 日志（那些 SELECT、PRAGMA 语句）
+            "sqlalchemy.engine": {
+                "level": "WARNING",
+                "handlers": ["console"],
+                "propagate": False,
+            },
+            "sqlalchemy.pool": {
+                "level": "WARNING",
+                "handlers": ["console"],
+                "propagate": False,
+            },
+            # 降低 uvicorn 的访问日志级别
+            "uvicorn.access": {
+                "level": "WARNING",
+                "handlers": ["console"],
+                "propagate": False,
+            },
+            # 保持 uvicorn 错误日志
+            "uvicorn.error": {
+                "level": "INFO",
                 "handlers": ["console"],
                 "propagate": False,
             },

@@ -2,10 +2,14 @@
 """OpenAI 兼容型 LLM 工具封装，保持与旧项目一致的接口体验。"""
 
 import os
+import logging
+import httpx
 from dataclasses import asdict, dataclass
 from typing import AsyncGenerator, Dict, List, Optional
 
 from openai import AsyncOpenAI
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -25,7 +29,18 @@ class LLMClient:
         if not key:
             raise ValueError("缺少 OPENAI_API_KEY 配置，请在数据库或环境变量中补全。")
 
-        self._client = AsyncOpenAI(api_key=key, base_url=base_url or os.environ.get("OPENAI_API_BASE"))
+        # 配置代理
+        proxy = os.environ.get("HTTP_PROXY") or os.environ.get("HTTPS_PROXY")
+        http_client = None
+        if proxy:
+            logger.info(f"Using proxy: {proxy}")
+            http_client = httpx.AsyncClient(proxy=proxy)
+
+        self._client = AsyncOpenAI(
+            api_key=key,
+            base_url=base_url or os.environ.get("OPENAI_API_BASE"),
+            http_client=http_client
+        )
 
     async def stream_chat(
         self,
@@ -54,12 +69,17 @@ class LLMClient:
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
 
-        stream = await self._client.chat.completions.create(**payload)
-        async for chunk in stream:
-            if not chunk.choices:
-                continue
-            choice = chunk.choices[0]
-            yield {
-                "content": choice.delta.content,
-                "finish_reason": choice.finish_reason,
-            }
+        logger.info(f"Calling LLM API - Base URL: {self._client.base_url}, Model: {payload['model']}")
+        try:
+            stream = await self._client.chat.completions.create(**payload)
+            async for chunk in stream:
+                if not chunk.choices:
+                    continue
+                choice = chunk.choices[0]
+                yield {
+                    "content": choice.delta.content,
+                    "finish_reason": choice.finish_reason,
+                }
+        except Exception as e:
+            logger.error(f"LLM API Error - Base URL: {self._client.base_url}, Model: {payload['model']}, Error: {str(e)}")
+            raise

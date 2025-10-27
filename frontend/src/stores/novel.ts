@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import type { NovelProject, NovelProjectSummary, ConverseResponse, BlueprintGenerationResponse, Blueprint, DeleteNovelsResponse, ChapterOutline } from '@/api/novel'
+import type { NovelProject, NovelProjectSummary, ConverseResponse, BlueprintGenerationResponse, Blueprint, DeleteNovelsResponse, ChapterOutline, StartConceptResponse } from '@/api/novel'
 import { NovelAPI } from '@/api/novel'
 
 export const useNovelStore = defineStore('novel', () => {
@@ -85,6 +85,29 @@ export const useNovelStore = defineStore('novel', () => {
     }
   }
 
+  async function startConceptConversation(title: string, initialPrompt: string): Promise<StartConceptResponse> {
+    isLoading.value = true
+    error.value = null
+    try {
+      const response = await NovelAPI.startConceptConversation(title, initialPrompt)
+      // 设置当前项目ID和对话状态
+      currentProject.value = {
+        id: response.project_id,
+        title,
+        initial_prompt: initialPrompt,
+        conversation_history: [],
+        chapters: []
+      }
+      currentConversationState.value = response.conversation_state
+      return response
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : '开始对话失败'
+      throw err
+    } finally {
+      isLoading.value = false
+    }
+  }
+
   async function sendConversation(userInput: any): Promise<ConverseResponse> {
     isLoading.value = true
     error.value = null
@@ -137,6 +160,48 @@ export const useNovelStore = defineStore('novel', () => {
       currentProject.value = await NovelAPI.saveBlueprint(currentProject.value.id, blueprint)
     } catch (err) {
       error.value = err instanceof Error ? err.message : '保存蓝图失败'
+      throw err
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function updateBlueprint(blueprint: Blueprint) {
+    isLoading.value = true
+    error.value = null
+    try {
+      if (!currentProject.value) {
+        throw new Error('没有当前项目')
+      }
+      if (!blueprint) {
+        throw new Error('缺少蓝图数据')
+      }
+      // 使用 PATCH API 更新蓝图
+      currentProject.value = await NovelAPI.updateBlueprint(currentProject.value.id, blueprint)
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : '更新蓝图失败'
+      throw err
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function regenerateChapterOutline(startChapter: number, numChapters: number) {
+    isLoading.value = true
+    error.value = null
+    try {
+      if (!currentProject.value) {
+        throw new Error('没有当前项目')
+      }
+      // 调用生成章节大纲 API
+      currentProject.value = await NovelAPI.generateChapterOutline(
+        currentProject.value.id,
+        startChapter,
+        numChapters
+      )
+      return currentProject.value
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : '重新生成大纲失败'
       throw err
     } finally {
       isLoading.value = false
@@ -305,9 +370,12 @@ export const useNovelStore = defineStore('novel', () => {
     createProject,
     loadProject,
     loadChapter,
+    startConceptConversation,
     sendConversation,
     generateBlueprint,
     saveBlueprint,
+    updateBlueprint,
+    regenerateChapterOutline,
     generateChapter,
     evaluateChapter,
     selectChapterVersion,

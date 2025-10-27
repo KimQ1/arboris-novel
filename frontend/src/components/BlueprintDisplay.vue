@@ -1,13 +1,93 @@
 <template>
   <div class="p-8 bg-white rounded-2xl shadow-2xl fade-in">
-    <h2 class="text-3xl font-bold text-center text-gray-800 mb-6">你的故事蓝图已生成！</h2>
+    <h2 class="text-3xl font-bold text-center text-gray-800 mb-6">
+      {{ isEditMode ? '编辑故事蓝图' : '你的故事蓝图已生成！' }}
+    </h2>
 
     <!-- AI消息 -->
-    <div v-if="aiMessage" class="mb-6 p-4 bg-blue-50 rounded-lg border border-blue-200">
+    <div v-if="aiMessage && !isEditMode" class="mb-6 p-4 bg-blue-50 rounded-lg border border-blue-200">
       <p class="text-blue-800">{{ aiMessage }}</p>
     </div>
 
-    <div class="prose max-w-none p-6 bg-gray-50 rounded-lg border border-gray-200" v-html="formattedBlueprint"></div>
+    <!-- 编辑模式 -->
+    <div v-if="isEditMode" class="space-y-6 mb-8">
+      <!-- 基本信息 -->
+      <div class="bg-gray-50 rounded-lg p-6 border border-gray-200">
+        <h3 class="text-xl font-bold text-gray-800 mb-4 flex items-center">
+          <svg class="w-6 h-6 mr-2 text-indigo-600" fill="currentColor" viewBox="0 0 20 20">
+            <path d="M9 2a1 1 0 000 2h2a1 1 0 100-2H9z"></path>
+            <path fill-rule="evenodd" d="M4 5a2 2 0 012-2 3 3 0 003 3h2a3 3 0 003-3 2 2 0 012 2v11a2 2 0 01-2 2H6a2 2 0 01-2-2V5zm3 4a1 1 0 000 2h.01a1 1 0 100-2H7zm3 0a1 1 0 000 2h3a1 1 0 100-2h-3zm-3 4a1 1 0 100 2h.01a1 1 0 100-2H7zm3 0a1 1 0 100 2h3a1 1 0 100-2h-3z" clip-rule="evenodd"></path>
+          </svg>
+          基本信息
+        </h3>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">标题</label>
+            <input v-model="editableBlueprint.title" type="text" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500" />
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">类型</label>
+            <input v-model="editableBlueprint.genre" type="text" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500" />
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">风格</label>
+            <input v-model="editableBlueprint.style" type="text" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500" />
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">基调</label>
+            <input v-model="editableBlueprint.tone" type="text" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500" />
+          </div>
+          <div class="md:col-span-2">
+            <label class="block text-sm font-medium text-gray-700 mb-2">目标读者</label>
+            <input v-model="editableBlueprint.target_audience" type="text" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500" />
+          </div>
+          <div class="md:col-span-2">
+            <label class="block text-sm font-medium text-gray-700 mb-2">一句话总结</label>
+            <input v-model="editableBlueprint.one_sentence_summary" type="text" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500" />
+          </div>
+          <div class="md:col-span-2">
+            <label class="block text-sm font-medium text-gray-700 mb-2">完整简介</label>
+            <textarea v-model="editableBlueprint.full_synopsis" rows="4" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"></textarea>
+          </div>
+        </div>
+      </div>
+
+      <!-- 角色编辑 -->
+      <div class="bg-gray-50 rounded-lg p-6 border border-gray-200">
+        <h3 class="text-xl font-bold text-gray-800 mb-4 flex items-center">
+          <svg class="w-6 h-6 mr-2 text-indigo-600" fill="currentColor" viewBox="0 0 20 20">
+            <path d="M9 6a3 3 0 11-6 0 3 3 0 016 0zM17 6a3 3 0 11-6 0 3 3 0 016 0zM12.93 17c.046-.327.07-.66.07-1a6.97 6.97 0 00-1.5-4.33A5 5 0 0119 16v1h-6.07zM6 11a5 5 0 015 5v1H1v-1a5 5 0 015-5z"></path>
+          </svg>
+          主要角色
+        </h3>
+        <CharactersEditor v-model="editableBlueprint.characters" />
+      </div>
+
+      <!-- 关系编辑 -->
+      <div class="bg-gray-50 rounded-lg p-6 border border-gray-200">
+        <h3 class="text-xl font-bold text-gray-800 mb-4 flex items-center">
+          <svg class="w-6 h-6 mr-2 text-indigo-600" fill="currentColor" viewBox="0 0 20 20">
+            <path fill-rule="evenodd" d="M3.172 5.172a4 4 0 015.656 0L10 6.343l1.172-1.171a4 4 0 115.656 5.656L10 17.657l-6.828-6.829a4 4 0 010-5.656z" clip-rule="evenodd"></path>
+          </svg>
+          角色关系
+        </h3>
+        <RelationshipsEditor v-model="editableBlueprint.relationships" />
+      </div>
+
+      <!-- 章节大纲编辑 -->
+      <div class="bg-gray-50 rounded-lg p-6 border border-gray-200">
+        <h3 class="text-xl font-bold text-gray-800 mb-4 flex items-center">
+          <svg class="w-6 h-6 mr-2 text-indigo-600" fill="currentColor" viewBox="0 0 20 20">
+            <path d="M4 4a2 2 0 00-2 2v1h16V6a2 2 0 00-2-2H4zM18 9H2v5a2 2 0 002 2h12a2 2 0 002-2V9zM4 13a1 1 0 011-1h1a1 1 0 110 2H5a1 1 0 01-1-1zm5-1a1 1 0 100 2h1a1 1 0 100-2H9z"></path>
+          </svg>
+          章节大纲
+        </h3>
+        <ChapterOutlineEditor v-model="editableBlueprint.chapter_outline" />
+      </div>
+    </div>
+
+    <!-- 显示模式 -->
+    <div v-else class="prose max-w-none p-6 bg-gray-50 rounded-lg border border-gray-200" v-html="formattedBlueprint"></div>
 
     <!-- 加载状态 -->
     <div v-if="isSaving" class="text-center py-8">
@@ -36,38 +116,104 @@
       </div>
     </div>
 
+    <!-- 按钮区域 -->
     <div v-else class="text-center mt-8 space-x-4">
-      <button
-        @click="confirmRegenerate"
-        class="bg-gray-200 text-gray-700 font-bold py-3 px-8 rounded-full hover:bg-gray-300 transition-all duration-300 transform hover:scale-105"
-      >
-        <span class="flex items-center justify-center">
-          <svg class="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 20 20">
-            <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd"></path>
-          </svg>
-          重新生成
-        </span>
-      </button>
-      <button
-        @click="confirmBlueprint"
-        :disabled="isSaving"
-        class="bg-gradient-to-r from-green-500 to-emerald-600 text-white font-bold py-3 px-8 rounded-full hover:from-green-600 hover:to-emerald-700 transition-all duration-300 transform hover:scale-105 shadow-lg hover:shadow-xl disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
-      >
-        <span class="flex items-center justify-center">
-          <svg class="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 20 20">
-            <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path>
-          </svg>
-          确认并开始创作
-        </span>
-      </button>
+      <!-- 编辑模式按钮 -->
+      <template v-if="isEditMode">
+        <button
+          @click="cancelEdit"
+          class="bg-gray-200 text-gray-700 font-bold py-3 px-8 rounded-full hover:bg-gray-300 transition-all duration-300 transform hover:scale-105"
+        >
+          <span class="flex items-center justify-center">
+            <svg class="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 20 20">
+              <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"></path>
+            </svg>
+            取消
+          </span>
+        </button>
+        <button
+          @click="saveEdit"
+          :disabled="isSaving"
+          class="bg-gradient-to-r from-blue-500 to-indigo-600 text-white font-bold py-3 px-8 rounded-full hover:from-blue-600 hover:to-indigo-700 transition-all duration-300 transform hover:scale-105 shadow-lg hover:shadow-xl disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
+        >
+          <span class="flex items-center justify-center">
+            <svg class="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 20 20">
+              <path d="M7.707 10.293a1 1 0 10-1.414 1.414l3 3a1 1 0 001.414 0l3-3a1 1 0 00-1.414-1.414L11 11.586V6a1 1 0 10-2 0v5.586l-1.293-1.293z"></path>
+              <path d="M5 4a2 2 0 012-2h6a2 2 0 012 2v1a1 1 0 11-2 0V4H7v1a1 1 0 11-2 0V4z"></path>
+            </svg>
+            保存修改
+          </span>
+        </button>
+      </template>
+
+      <!-- 查看模式按钮 -->
+      <template v-else>
+        <button
+          @click="enterEditMode"
+          class="bg-blue-500 text-white font-bold py-3 px-8 rounded-full hover:bg-blue-600 transition-all duration-300 transform hover:scale-105"
+        >
+          <span class="flex items-center justify-center">
+            <svg class="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 20 20">
+              <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z"></path>
+            </svg>
+            编辑蓝图
+          </span>
+        </button>
+        <button
+          @click="showRegenerateOutlineModal = true"
+          class="bg-purple-500 text-white font-bold py-3 px-8 rounded-full hover:bg-purple-600 transition-all duration-300 transform hover:scale-105"
+        >
+          <span class="flex items-center justify-center">
+            <svg class="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 20 20">
+              <path d="M4 4a2 2 0 00-2 2v1h16V6a2 2 0 00-2-2H4zM18 9H2v5a2 2 0 002 2h12a2 2 0 002-2V9zM4 13a1 1 0 011-1h1a1 1 0 110 2H5a1 1 0 01-1-1zm5-1a1 1 0 100 2h1a1 1 0 100-2H9z"></path>
+            </svg>
+            重新生成后续大纲
+          </span>
+        </button>
+        <button
+          @click="confirmRegenerate"
+          class="bg-gray-200 text-gray-700 font-bold py-3 px-8 rounded-full hover:bg-gray-300 transition-all duration-300 transform hover:scale-105"
+        >
+          <span class="flex items-center justify-center">
+            <svg class="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 20 20">
+              <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd"></path>
+            </svg>
+            重新生成整个蓝图
+          </span>
+        </button>
+        <button
+          @click="confirmBlueprint"
+          :disabled="isSaving"
+          class="bg-gradient-to-r from-green-500 to-emerald-600 text-white font-bold py-3 px-8 rounded-full hover:from-green-600 hover:to-emerald-700 transition-all duration-300 transform hover:scale-105 shadow-lg hover:shadow-xl disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
+        >
+          <span class="flex items-center justify-center">
+            <svg class="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 20 20">
+              <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path>
+            </svg>
+            确认并开始创作
+          </span>
+        </button>
+      </template>
     </div>
+
+    <!-- 重新生成后续大纲模态框 -->
+    <RegenerateOutlineModal
+      :show="showRegenerateOutlineModal"
+      :current-chapter-count="editableBlueprint.chapter_outline?.length || 0"
+      @close="showRegenerateOutlineModal = false"
+      @regenerate="handleRegenerateOutline"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { globalAlert } from '@/composables/useAlert'
 import type { Blueprint } from '@/api/novel'
+import CharactersEditor from './CharactersEditor.vue'
+import RelationshipsEditor from './RelationshipsEditor.vue'
+import ChapterOutlineEditor from './ChapterOutlineEditor.vue'
+import RegenerateOutlineModal from './RegenerateOutlineModal.vue'
 
 interface DisplayField {
   label: string;
@@ -87,9 +233,33 @@ const props = defineProps<Props>()
 const emit = defineEmits<{
   confirm: []
   regenerate: []
+  update: [blueprint: Blueprint]
+  regenerateOutline: [params: { startChapter: number; numChapters: number }]
 }>()
 
 const isSaving = ref(false)
+const isEditMode = ref(false)
+const showRegenerateOutlineModal = ref(false)
+const editableBlueprint = ref<Blueprint>({
+  title: '',
+  target_audience: '',
+  genre: '',
+  style: '',
+  tone: '',
+  one_sentence_summary: '',
+  full_synopsis: '',
+  world_setting: {},
+  characters: [],
+  relationships: [],
+  chapter_outline: []
+})
+
+// 监听 props.blueprint 的变化，初始化 editableBlueprint
+watch(() => props.blueprint, (newBlueprint) => {
+  if (newBlueprint) {
+    editableBlueprint.value = JSON.parse(JSON.stringify(newBlueprint))
+  }
+}, { immediate: true, deep: true })
 
 const confirmRegenerate = async () => {
   const confirmed = await globalAlert.showConfirm('重新生成会覆盖当前蓝图，确定继续吗？', '重新生成确认')
@@ -105,6 +275,37 @@ const confirmBlueprint = async () => {
   } finally {
     isSaving.value = false
   }
+}
+
+const enterEditMode = () => {
+  isEditMode.value = true
+}
+
+const cancelEdit = () => {
+  // 恢复原始数据
+  if (props.blueprint) {
+    editableBlueprint.value = JSON.parse(JSON.stringify(props.blueprint))
+  }
+  isEditMode.value = false
+}
+
+const saveEdit = async () => {
+  isSaving.value = true
+  try {
+    // 发送更新事件给父组件
+    emit('update', editableBlueprint.value)
+    isEditMode.value = false
+    globalAlert.showSuccess('蓝图已更新！', '保存成功')
+  } catch (error) {
+    console.error('保存蓝图失败:', error)
+    globalAlert.showError(`保存失败: ${error instanceof Error ? error.message : '未知错误'}`, '保存失败')
+  } finally {
+    isSaving.value = false
+  }
+}
+
+const handleRegenerateOutline = (params: { startChapter: number; numChapters: number }) => {
+  emit('regenerateOutline', params)
 }
 
 const formattedBlueprint = computed(() => {

@@ -247,10 +247,32 @@ class LLMService:
                     exc_info=exc,
                 )
                 continue
-            except Exception as exc:
-                # 其他错误直接抛出，不尝试下一个 Key
+            except HTTPException as exc:
+                last_error = exc
+
+                # 503 (服务过载) 和 500 (内部错误) 是临时性错误，尝试下一个 Key
+                if exc.status_code in [500, 503]:
+                    logger.warning(
+                        "API Key #%d 遇到临时错误 (%d)，尝试下一个 Key: %s",
+                        key_index,
+                        exc.status_code,
+                        exc.detail,
+                    )
+                    continue
+
+                # 其他 HTTP 错误（如 400, 401, 403）直接抛出
                 logger.error(
-                    "API Key #%d 调用失败（非配额错误），停止轮询: %s",
+                    "API Key #%d 调用失败（HTTP %d），停止轮询: %s",
+                    key_index,
+                    exc.status_code,
+                    exc.detail,
+                    exc_info=exc,
+                )
+                raise
+            except Exception as exc:
+                # 其他未知错误直接抛出
+                logger.error(
+                    "API Key #%d 调用失败（未知错误），停止轮询: %s",
                     key_index,
                     str(exc),
                     exc_info=exc,
@@ -615,9 +637,16 @@ class LLMService:
         await self.session.commit()
 
     async def _get_config_value(self, key: str) -> Optional[str]:
+        # 环境变量优先级高于数据库配置
+        # 这样可以让本地开发和 Docker 部署使用不同的配置，而不会互相冲突
+        env_key = key.upper().replace(".", "_")
+        env_value = os.getenv(env_key)
+        if env_value:
+            return env_value
+
+        # 如果没有环境变量，则从数据库读取
         record = await self.system_config_repo.get_by_key(key)
         if record:
             return record.value
-        # 兼容环境变量，首次迁移时无需立即写入数据库
-        env_key = key.upper().replace(".", "_")
-        return os.getenv(env_key)
+
+        return None

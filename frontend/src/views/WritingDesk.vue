@@ -387,45 +387,22 @@ const generateChapter = async (chapterNumber: number) => {
     generatingChapter.value = chapterNumber
     selectedChapterNumber.value = chapterNumber
 
-    // 在本地更新章节状态为generating
-    if (project.value?.chapters) {
-      const chapter = project.value.chapters.find(ch => ch.chapter_number === chapterNumber)
-      if (chapter) {
-        chapter.generation_status = 'generating'
-      } else {
-        // If chapter does not exist, create a temporary one to show generating state
-        const outline = project.value.blueprint?.chapter_outline?.find(o => o.chapter_number === chapterNumber)
-        project.value.chapters.push({
-          chapter_number: chapterNumber,
-          title: outline?.title || '加载中...',
-          summary: outline?.summary || '',
-          content: '',
-          versions: [],
-          evaluation: null,
-          generation_status: 'generating'
-        } as Chapter)
-      }
-    }
-
     await novelStore.generateChapter(chapterNumber)
-    
+
+    // 生成完成后主动刷新章节数据，确保前端显示最新内容
+    // 因为生成完成后状态变为 waiting_for_confirm，轮询会停止
+    await fetchChapterStatus()
+
     // store 中的 project 已经被更新，所以我们不需要手动修改本地状态
     // chapterGenerationResult 也不再需要，因为 availableVersions 会从更新后的 project.chapters 中获取数据
     // showVersionSelector is now a computed property and will update automatically.
-    chapterGenerationResult.value = null 
+    chapterGenerationResult.value = null
     selectedVersionIndex.value = 0
   } catch (error) {
     console.error('生成章节失败:', error)
-
-    // 错误状态的本地更新仍然是必要的，以立即反映UI
-    if (project.value?.chapters) {
-      const chapter = project.value.chapters.find(ch => ch.chapter_number === chapterNumber)
-      if (chapter) {
-        chapter.generation_status = 'failed'
-      }
-    }
-
     globalAlert.showError(`生成章节失败: ${error instanceof Error ? error.message : '未知错误'}`, '生成失败')
+    // 错误发生后刷新章节状态，确保前端显示正确的失败状态
+    await fetchChapterStatus()
   } finally {
     generatingChapter.value = null
   }
@@ -454,9 +431,9 @@ const selectVersion = async (versionIndex: number) => {
     selectedVersionIndex.value = versionIndex
     await novelStore.selectChapterVersion(selectedChapterNumber.value, versionIndex)
 
-    // 状态更新将由 store 自动触发，本地无需手动更新
-    // 轮询机制会处理状态变更，成功后会自动隐藏选择器
-    // showVersionSelector.value = false
+    // 选择完成后立即刷新章节数据，确保前端显示最新状态
+    await fetchChapterStatus()
+
     chapterGenerationResult.value = null
     globalAlert.showSuccess('版本已确认', '操作成功')
   } catch (error) {
@@ -510,13 +487,18 @@ const evaluateChapter = async () => {
           chapter.generation_status = 'evaluating'
         }
       }
+
+      // evaluateChapter API 会返回更新后的完整项目数据，包含评审结果
+      // store 会自动更新 currentProject，所以不需要再次调用 fetchChapterStatus
       await novelStore.evaluateChapter(selectedChapterNumber.value)
-      
-      // 评审完成后，状态会通过store和轮询更新，这里不需要额外操作
+
       globalAlert.showSuccess('章节评审结果已生成', '评审成功')
+
+      // 评审成功后自动显示评审结果
+      showEvaluationDetailModal.value = true
     } catch (error) {
       console.error('评审章节失败:', error)
-      
+
       // 错误状态下恢复章节状态
       if (project.value?.chapters) {
         const chapter = project.value.chapters.find(ch => ch.chapter_number === selectedChapterNumber.value)
@@ -524,7 +506,7 @@ const evaluateChapter = async () => {
           chapter.generation_status = 'successful' // 恢复为成功状态
         }
       }
-      
+
       globalAlert.showError(`评审章节失败: ${error instanceof Error ? error.message : '未知错误'}`, '评审失败')
     }
   }
@@ -561,6 +543,30 @@ const editChapterContent = async (data: { chapterNumber: number, content: string
   try {
     await novelStore.editChapterContent(project.value.id, data.chapterNumber, data.content)
     globalAlert.showSuccess('章节内容已更新', '保存成功')
+
+    // 询问用户是否要基于修改后的内容重新生成后续大纲
+    const totalChapters = project.value.blueprint?.chapter_outline?.length || 0
+    if (data.chapterNumber < totalChapters) {
+      const shouldRegenerate = await globalAlert.showConfirm(
+        `是否基于修改后的第 ${data.chapterNumber} 章内容重新生成后续章节大纲（第 ${data.chapterNumber + 1} - ${totalChapters} 章）？`,
+        '重新生成后续大纲'
+      )
+
+      if (shouldRegenerate) {
+        isGeneratingOutline.value = true
+        try {
+          const startChapter = data.chapterNumber + 1
+          const numChapters = totalChapters - data.chapterNumber
+          await novelStore.regenerateChapterOutline(startChapter, numChapters)
+          globalAlert.showSuccess('后续章节大纲已重新生成', '生成成功')
+        } catch (error) {
+          console.error('重新生成大纲失败:', error)
+          globalAlert.showError(`重新生成大纲失败: ${error instanceof Error ? error.message : '未知错误'}`, '生成失败')
+        } finally {
+          isGeneratingOutline.value = false
+        }
+      }
+    }
   } catch (error) {
     console.error('编辑章节内容失败:', error)
     globalAlert.showError(`编辑章节内容失败: ${error instanceof Error ? error.message : '未知错误'}`, '保存失败')

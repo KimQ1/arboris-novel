@@ -14,10 +14,13 @@ from ...schemas.novel import (
     Chapter as ChapterSchema,
     ConverseRequest,
     ConverseResponse,
+    ExpandContentRequest,
+    ExpandContentResponse,
     NovelProject as NovelProjectSchema,
     NovelProjectSummary,
     NovelSectionResponse,
     NovelSectionType,
+    StartConceptResponse,
 )
 from ...schemas.user import UserInDB
 from ...services.llm_service import LLMService
@@ -124,6 +127,72 @@ async def delete_novels(
     await novel_service.delete_projects(project_ids, current_user.id)
     logger.info("用户 %s 删除项目 %s", current_user.id, project_ids)
     return {"status": "success", "message": f"成功删除 {len(project_ids)} 个项目"}
+
+
+@router.post("/concept/start", response_model=StartConceptResponse, status_code=status.HTTP_201_CREATED)
+async def start_concept_conversation(
+    title: str = Body(...),
+    initial_prompt: str = Body(...),
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+) -> StartConceptResponse:
+    """开始概念对话，先调用 LLM，成功后再创建项目。"""
+    prompt_service = PromptService(session)
+    llm_service = LLMService(session)
+
+    # 准备第一次对话（用户输入为 null）
+    user_content = json.dumps({"id": None, "value": None}, ensure_ascii=False)
+    conversation_history = [{"role": "user", "content": user_content}]
+
+    system_prompt = _ensure_prompt(await prompt_service.get_prompt("concept"), "concept")
+    system_prompt = f"{system_prompt}\n{JSON_RESPONSE_INSTRUCTION}"
+
+    # 先调用 LLM
+    logger.info("开始概念对话，用户 %s，标题: %s", current_user.id, title)
+    llm_response = await llm_service.get_llm_response(
+        system_prompt=system_prompt,
+        conversation_history=conversation_history,
+        temperature=0.8,
+        user_id=current_user.id,
+        timeout=240.0,
+    )
+    llm_response = remove_think_tags(llm_response)
+
+    # 解析 LLM 响应
+    try:
+        normalized = unwrap_markdown_json(llm_response)
+        sanitized = sanitize_json_like_text(normalized)
+        parsed = json.loads(sanitized)
+    except json.JSONDecodeError as exc:
+        logger.exception(
+            "Failed to parse concept start response: user_id=%s error=%s\nOriginal response: %s",
+            current_user.id,
+            exc,
+            llm_response[:1000],
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"概念对话失败，AI 返回的内容格式不正确。请重试或联系管理员。错误详情: {str(exc)}"
+        ) from exc
+
+    # LLM 调用成功，现在创建项目
+    novel_service = NovelService(session)
+    project = await novel_service.create_project(current_user.id, title, initial_prompt)
+    logger.info("用户 %s 创建项目 %s（通过概念对话）", current_user.id, project.id)
+
+    # 保存对话记录
+    await novel_service.append_conversation(project.id, "user", user_content)
+    await novel_service.append_conversation(project.id, "assistant", normalized)
+
+    logger.info("项目 %s 概念对话开始成功，is_complete=%s", project.id, parsed.get("is_complete"))
+
+    return StartConceptResponse(
+        project_id=project.id,
+        ai_message=parsed.get("ai_message", ""),
+        ui_control=parsed.get("ui_control", {}),
+        conversation_state=parsed.get("conversation_state", {}),
+        is_complete=parsed.get("is_complete", False),
+    )
 
 
 @router.post("/{project_id}/concept/converse", response_model=ConverseResponse)
@@ -324,3 +393,112 @@ async def patch_blueprint(
     await novel_service.patch_blueprint(project_id, update_data)
     logger.info("项目 %s 局部更新蓝图字段：%s", project_id, list(update_data.keys()))
     return await novel_service.get_project_schema(project_id, current_user.id)
+
+
+@router.post("/{project_id}/expand-content", response_model=ExpandContentResponse)
+async def expand_content(
+    project_id: str,
+    request: ExpandContentRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+) -> ExpandContentResponse:
+    """使用 AI 扩展简短描述，生成更丰富的内容。
+
+    支持的内容类型：
+    - faction: 阵营/势力
+    - quest: 任务
+    - location: 地点
+    - item: 物品
+    """
+    novel_service = NovelService(session)
+    llm_service = LLMService(session)
+    prompt_service = PromptService(session)
+
+    # 验证项目所有权
+    await novel_service.ensure_project_owner(project_id, current_user.id)
+
+    # 根据内容类型选择不同的提示词
+    content_type_prompts = {
+        "faction": """你是一位专业的小说世界观设计师。用户会给你一个阵营/势力的简短描述，请帮助扩展成更丰富的介绍。
+
+要求：
+1. 保持用户原有的核心设定
+2. 补充阵营的历史背景、组织结构、核心理念
+3. 描述阵营的主要成员类型、势力范围
+4. 说明阵营的目标和行事风格
+5. 字数控制在 150-300 字之间
+6. 使用生动的语言，符合小说世界观的氛围
+
+请直接返回扩展后的描述，不要添加额外的说明。""",
+
+        "quest": """你是一位专业的小说情节设计师。用户会给你一个任务/事件的简短描述，请帮助扩展成更丰富的介绍。
+
+要求：
+1. 保持用户原有的核心设定
+2. 补充任务的背景故事、触发条件
+3. 描述任务的目标、难度、可能的奖励
+4. 说明任务对主线剧情的影响
+5. 字数控制在 150-300 字之间
+6. 使用引人入胜的语言，增强故事性
+
+请直接返回扩展后的描述，不要添加额外的说明。""",
+
+        "location": """你是一位专业的小说场景设计师。用户会给你一个地点的简短描述，请帮助扩展成更丰富的介绍。
+
+要求：
+1. 保持用户原有的核心设定
+2. 补充地点的地理位置、环境特征
+3. 描述地点的历史、文化氛围
+4. 说明地点的重要性和特殊之处
+5. 字数控制在 150-300 字之间
+6. 使用富有画面感的语言
+
+请直接返回扩展后的描述，不要添加额外的说明。""",
+
+        "item": """你是一位专业的小说道具设计师。用户会给你一个物品的简短描述，请帮助扩展成更丰富的介绍。
+
+要求：
+1. 保持用户原有的核心设定
+2. 补充物品的外观、材质、制作工艺
+3. 描述物品的功能、特殊能力
+4. 说明物品的来历和重要性
+5. 字数控制在 150-300 字之间
+6. 使用细腻的描写，增强代入感
+
+请直接返回扩展后的描述，不要添加额外的说明。"""
+    }
+
+    system_prompt = content_type_prompts.get(request.content_type, content_type_prompts["faction"])
+
+    try:
+        expanded_content = await llm_service.get_llm_response(
+            system_prompt=system_prompt,
+            conversation_history=[
+                {"role": "user", "content": f"请扩展以下内容：\n\n{request.brief_description}"}
+            ],
+            temperature=0.8,
+            user_id=current_user.id,
+            timeout=60.0,
+        )
+
+        # 清理可能的思考标签
+        cleaned_content = remove_think_tags(expanded_content).strip()
+
+        logger.info(
+            "用户 %s 为项目 %s 扩展了 %s 类型的内容",
+            current_user.id,
+            project_id,
+            request.content_type
+        )
+
+        return ExpandContentResponse(
+            expanded_content=cleaned_content,
+            original_input=request.brief_description
+        )
+
+    except Exception as exc:
+        logger.exception("扩展内容失败: project_id=%s type=%s", project_id, request.content_type)
+        raise HTTPException(
+            status_code=500,
+            detail=f"AI 扩展内容失败: {str(exc)[:200]}"
+        )

@@ -3,7 +3,8 @@ import router from '@/router'
 import type { NovelSectionResponse, NovelSectionType } from '@/api/novel'
 
 // API 配置
-export const API_BASE_URL = import.meta.env.MODE === 'production' ? '' : 'http://127.0.0.1:8000'
+// 使用相对路径，通过 Vite 代理转发到后端
+export const API_BASE_URL = ''
 export const ADMIN_API_PREFIX = '/api/admin'
 
 // 统一请求封装

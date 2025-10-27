@@ -2,8 +2,8 @@ import { useAuthStore } from '@/stores/auth'
 import router from '@/router'
 
 // API 配置
-// 在生产环境中使用相对路径，在开发环境中使用绝对路径
-export const API_BASE_URL = import.meta.env.MODE === 'production' ? '' : 'http://127.0.0.1:8000'
+// 使用相对路径，通过 Vite 代理转发到后端
+export const API_BASE_URL = ''
 export const API_PREFIX = '/api'
 
 // 统一的请求处理函数
@@ -113,6 +113,14 @@ export interface ConverseResponse {
   ready_for_blueprint?: boolean  // 新增：表示准备生成蓝图
 }
 
+export interface StartConceptResponse {
+  project_id: string
+  ai_message: string
+  ui_control: UIControl
+  conversation_state: any
+  is_complete: boolean
+}
+
 export interface BlueprintGenerationResponse {
   blueprint: Blueprint
   ai_message: string
@@ -166,6 +174,19 @@ export class NovelAPI {
 
   static async getSection(projectId: string, section: NovelSectionType): Promise<NovelSectionResponse> {
     return request(`${NOVELS_BASE}/${projectId}/sections/${section}`)
+  }
+
+  static async startConceptConversation(
+    title: string,
+    initialPrompt: string
+  ): Promise<StartConceptResponse> {
+    return request(`${NOVELS_BASE}/concept/start`, {
+      method: 'POST',
+      body: JSON.stringify({
+        title,
+        initial_prompt: initialPrompt
+      })
+    })
   }
 
   static async converseConcept(
@@ -269,10 +290,10 @@ export class NovelAPI {
     })
   }
 
-  static async updateBlueprint(projectId: string, data: Record<string, any>): Promise<NovelProject> {
+  static async updateBlueprint(projectId: string, blueprint: Blueprint | Record<string, any>): Promise<NovelProject> {
     return request(`${NOVELS_BASE}/${projectId}/blueprint`, {
       method: 'PATCH',
-      body: JSON.stringify(data)
+      body: JSON.stringify(blueprint)
     })
   }
 
@@ -286,6 +307,20 @@ export class NovelAPI {
       body: JSON.stringify({
         chapter_number: chapterNumber,
         content: content
+      })
+    })
+  }
+
+  static async expandContent(
+    projectId: string,
+    contentType: string,
+    briefDescription: string
+  ): Promise<{ expanded_content: string; original_input: string }> {
+    return request(`${NOVELS_BASE}/${projectId}/expand-content`, {
+      method: 'POST',
+      body: JSON.stringify({
+        content_type: contentType,
+        brief_description: briefDescription
       })
     })
   }

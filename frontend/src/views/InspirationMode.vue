@@ -103,11 +103,13 @@
 
       <!-- 大纲展示界面 -->
       <BlueprintDisplay
-        v-if="showBlueprint"
+        v-if="showBlueprint && completedBlueprint"
         :blueprint="completedBlueprint"
         :ai-message="blueprintMessage"
         @confirm="handleConfirmBlueprint"
         @regenerate="handleRegenerateBlueprint"
+        @update="handleBlueprintUpdate"
+        @regenerate-outline="handleRegenerateOutline"
       />
     </div>
   </div>
@@ -192,12 +194,27 @@ const startConversation = async () => {
   resetInspirationMode()
   conversationStarted.value = true
   isInitialLoading.value = true
-  
+
   try {
-    await novelStore.createProject('未命名灵感', '开始灵感模式')
-    
-    // 发起第一次对话
-    await handleUserInput(null)
+    // 调用新的 API，先进行 LLM 对话，成功后再创建项目
+    const response = await novelStore.startConceptConversation('未命名灵感', '开始灵感模式')
+
+    // 处理第一次对话响应
+    chatMessages.value.push({
+      type: 'ai',
+      content: response.ai_message
+    })
+
+    currentUIControl.value = response.ui_control
+    currentTurn.value = 1
+    isInitialLoading.value = false
+
+    await scrollToBottom()
+
+    if (response.is_complete) {
+      // 如果第一次对话就完成了（不太可能，但处理一下）
+      await handleGenerateBlueprint()
+    }
   } catch (error) {
     console.error('启动灵感模式失败:', error)
     globalAlert.showError(`无法开始灵感模式: ${error instanceof Error ? error.message : '未知错误'}`, '启动失败')
@@ -313,17 +330,70 @@ const handleGenerateBlueprint = async () => {
   }
 }
 
-const handleBlueprintGenerated = (response: any) => {
+const handleBlueprintGenerated = async (response: any) => {
   console.log('收到蓝图生成完成事件:', response)
+  console.log('蓝图数据:', response.blueprint)
+  console.log('AI消息:', response.ai_message)
+
+  // 先隐藏确认界面
+  showBlueprintConfirmation.value = false
+
+  // 设置蓝图数据
   completedBlueprint.value = response.blueprint
   blueprintMessage.value = response.ai_message
-  showBlueprintConfirmation.value = false
+
+  // 等待下一个 tick 确保数据已经更新
+  await nextTick()
+
+  // 显示蓝图界面
   showBlueprint.value = true
+
+  console.log('已切换到蓝图显示界面, showBlueprint:', showBlueprint.value)
+  console.log('completedBlueprint:', completedBlueprint.value)
 }
 
 const handleRegenerateBlueprint = () => {
   showBlueprint.value = false
   showBlueprintConfirmation.value = true
+}
+
+const handleBlueprintUpdate = async (updatedBlueprint: Blueprint) => {
+  try {
+    // 更新本地蓝图数据
+    completedBlueprint.value = updatedBlueprint
+
+    // 调用 API 保存更新
+    await novelStore.updateBlueprint(updatedBlueprint)
+  } catch (error) {
+    console.error('更新蓝图失败:', error)
+    throw error // 让 BlueprintDisplay 组件处理错误
+  }
+}
+
+const handleRegenerateOutline = async (params: { startChapter: number; numChapters: number }) => {
+  try {
+    if (!novelStore.currentProject) {
+      globalAlert.showError('当前项目不存在', '生成失败')
+      return
+    }
+
+    globalAlert.showAlert(`正在生成第 ${params.startChapter} - ${params.startChapter + params.numChapters - 1} 章大纲...`, 'info', '生成中')
+
+    // 调用 API 重新生成大纲
+    const updatedProject = await novelStore.regenerateChapterOutline(
+      params.startChapter,
+      params.numChapters
+    )
+
+    // 更新蓝图数据
+    if (updatedProject.blueprint) {
+      completedBlueprint.value = updatedProject.blueprint
+      globalAlert.showSuccess('后续大纲已重新生成！', '生成成功')
+    }
+  } catch (error) {
+    console.error('重新生成大纲失败:', error)
+    globalAlert.showError(`重新生成大纲失败: ${error instanceof Error ? error.message : '未知错误'}`, '生成失败')
+  }
 }
 
 const handleConfirmBlueprint = async () => {

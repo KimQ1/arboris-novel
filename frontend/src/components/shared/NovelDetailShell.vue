@@ -147,6 +147,7 @@
                 :class="componentContainerClass"
                 @edit="handleSectionEdit"
                 @add="startAddChapter"
+                @ai-generate="handleAIGenerate"
               />
             </div>
           </div>
@@ -221,6 +222,15 @@
         </div>
       </div>
     </transition>
+
+    <!-- AI Content Generator Modal -->
+    <AIContentGeneratorModal
+      v-if="!isAdmin"
+      v-model:show="isAIGeneratorOpen"
+      :content-type="aiGeneratorContentType"
+      :project-id="projectId"
+      @confirm="handleAIGeneratorConfirm"
+    />
   </div>
 </template>
 
@@ -238,6 +248,7 @@ import CharactersSection from '@/components/novel-detail/CharactersSection.vue'
 import RelationshipsSection from '@/components/novel-detail/RelationshipsSection.vue'
 import ChapterOutlineSection from '@/components/novel-detail/ChapterOutlineSection.vue'
 import ChaptersSection from '@/components/novel-detail/ChaptersSection.vue'
+import AIContentGeneratorModal from '@/components/novel-detail/AIContentGeneratorModal.vue'
 
 interface Props {
   isAdmin?: boolean
@@ -348,6 +359,10 @@ const isAddChapterModalOpen = ref(false)
 const newChapterTitle = ref('')
 const newChapterSummary = ref('')
 const originalBodyOverflow = ref('')
+
+// AI Generator modal state (user mode only)
+const isAIGeneratorOpen = ref(false)
+const aiGeneratorContentType = ref<'faction' | 'quest' | 'location' | 'item'>('faction')
 
 const novel = computed(() => !props.isAdmin ? novelStore.currentProject as NovelProject | null : null)
 
@@ -465,6 +480,50 @@ const handleSectionEdit = (payload: { field: string; title: string; value: any }
   modalTitle.value = payload.title
   modalContent.value = payload.value
   isModalOpen.value = true
+}
+
+const handleAIGenerate = (payload: { contentType: string }) => {
+  if (props.isAdmin) return
+  aiGeneratorContentType.value = payload.contentType as 'faction' | 'quest' | 'location' | 'item'
+  isAIGeneratorOpen.value = true
+}
+
+const handleAIGeneratorConfirm = async (data: { name: string; description: string }) => {
+  if (props.isAdmin) return
+  await ensureProjectLoaded()
+  const project = novel.value
+  if (!project || !project.blueprint) return
+
+  // 根据内容类型更新对应的字段
+  const contentType = aiGeneratorContentType.value
+  const worldSetting = project.blueprint.world_setting || {}
+
+  let fieldName = ''
+  if (contentType === 'faction') {
+    fieldName = 'world_setting.factions'
+    worldSetting.factions = worldSetting.factions || []
+    worldSetting.factions.push({ name: data.name, description: data.description })
+  } else if (contentType === 'quest') {
+    fieldName = 'world_setting.quests'
+    worldSetting.quests = worldSetting.quests || []
+    worldSetting.quests.push({ name: data.name, description: data.description })
+  } else if (contentType === 'location') {
+    fieldName = 'world_setting.key_locations'
+    worldSetting.key_locations = worldSetting.key_locations || []
+    worldSetting.key_locations.push({ name: data.name, description: data.description })
+  } else if (contentType === 'item') {
+    fieldName = 'world_setting.items'
+    worldSetting.items = worldSetting.items || []
+    worldSetting.items.push({ name: data.name, description: data.description })
+  }
+
+  // 保存到后端
+  try {
+    await NovelAPI.updateBlueprint(project.id, { world_setting: worldSetting })
+    await reloadSection('world_setting', true)
+  } catch (error) {
+    console.error('保存失败:', error)
+  }
 }
 
 const resolveSectionKey = (field: string): SectionKey => {

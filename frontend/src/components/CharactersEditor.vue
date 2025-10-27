@@ -45,11 +45,12 @@ import { ref, watch, defineProps, defineEmits, nextTick } from 'vue';
 
 interface Character {
   name: string;
-  identity: string;
-  personality: string;
-  goals: string;
-  abilities: string;
-  relationship_to_protagonist: string;
+  description?: string;
+  identity?: string;
+  personality?: string;
+  goals?: string;
+  abilities?: string;
+  relationship_to_protagonist?: string;
 }
 
 const props = defineProps({
